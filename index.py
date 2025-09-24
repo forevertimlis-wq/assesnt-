@@ -1,26 +1,24 @@
 import os
 import asyncio
 import google.generativeai as genai
+from flask import Flask, request, Response
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
 # --- Настройка ---
-# Получаем ключи из переменных окружения (более безопасно)
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-# Конфигурируем Gemini API
+# Конфигурация Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# --- Основная логика бота ---
+# Создание приложения python-telegram-bot
+application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-# Эта функция будет вызываться на каждое сообщение от пользователя
+# --- Логика бота ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
-
-    # Системная инструкция для Gemini: задаем роль психолога
-    # Это самая важная часть! Здесь мы "настраиваем" нейросеть
     system_instruction = """
     Ты — персональный психолог-консультант. Твоя задача — поддерживать пользователя,
     проявлять эмпатию и помогать ему разобраться в своих чувствах.
@@ -30,30 +28,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     или "Как эта ситуация влияет на вас сейчас?".
     Твои ответы должны быть краткими и направлены на поддержку диалога.
     """
-
-    # Создаем "чат" с Gemini, начиная с системной инструкции
+    
+    # Создаем "чат" с Gemini
     chat = model.start_chat(history=[
         {'role': 'user', 'parts': [system_instruction]},
         {'role': 'model', 'parts': ["Здравствуйте. Я готов выслушать вас. Расскажите, что вас беспокоит?"]}
     ])
 
-    # Отправляем сообщение пользователя в Gemini и получаем ответ
-    response = await chat.send_message_async(user_text)
+    try:
+        # Отправляем сообщение пользователя в Gemini и получаем ответ
+        response = await chat.send_message_async(user_text)
+        # Отправляем ответ пользователю в Telegram
+        await update.message.reply_text(response.text)
+    except Exception as e:
+        print(f"Ошибка при общении с Gemini или отправке сообщения: {e}")
+        # Можно отправить пользователю сообщение об ошибке, если нужно
+        # await update.message.reply_text("Извините, произошла внутренняя ошибка.")
 
-    # Отправляем ответ от Gemini пользователю в Telegram
-    await update.message.reply_text(response.text)
-
-
-# --- Код для запуска (специфичен для Vercel) ---
-
-# Создаем приложение
-application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-# Добавляем обработчик всех текстовых сообщений
+# Добавляем обработчик сообщений
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# Эта асинхронная функция будет точкой входа для Vercel
-async def main(request, response):
-    await application.initialize()
-    update = Update.de_json(await request.json(), application.bot)
-    await application.process_update(update)
-    return response.status(200).send("OK")
+# --- Код для запуска (точка входа для Vercel) ---
+app = Flask(__name__)
+
+@app.route('/api/index', methods=['POST'])
+def webhook():
+    # Получаем данные от Telegram
+    update_data = request.get_json(force=True)
+    update = Update.de_json(update_data, application.bot)
+    
+    # Запускаем обработку сообщения в асинхронном режиме
+    asyncio.run(application.process_update(update))
+    
+    # Отвечаем Telegram, что все в порядке
+    return Response('ok', status=200)
+
+# Это нужно, чтобы Vercel мог найти приложение (не обязательно, но хорошая практика)
+if __name__ == "__main__":
+    app.run(port=5000)
